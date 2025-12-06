@@ -1,0 +1,12 @@
+python-multipart
+pdfplumber
+pandas
+openai
+langchain-groq
+python-dotenv
+supabase
+google-generativeai
+uvicorn
+fastapi
+langgraph
+langchain
