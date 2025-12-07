@@ -7,6 +7,7 @@ export interface UserProfile {
   monthly_expenses: number;
   created_at: string;
   updated_at: string;
+  role?: string;
 }
 
 export interface Transaction {

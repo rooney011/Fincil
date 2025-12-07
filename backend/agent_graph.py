@@ -34,7 +34,7 @@ ROLE_PROMPTS = {
         "visionary": "The user is a FREELANCER. Advocate for spending that acts as a business expense or tax write-off. If it brings in more clients, buy it."
     },
     "teacher": {
-        "miser": "The user is a TEACHER. Income is fixed and modest. Every dollar counts. Warn strictly against luxury or status signaling.",
+        "miser": "The user is a TEACHER. Income is fixed and modest. Every rupee counts. Warn strictly against luxury or status signaling.",
         "visionary": "The user is a TEACHER. They work hard and risk burnout. Advocate for sustainable treats that improve mental health and patience."
     },
     "general": {
@@ -100,7 +100,7 @@ def miser_agent(state: AgentState):
     
     USER CONTEXT:
     - Goal: {state['profile'].get('financial_goal')}
-    - Monthly Income: ${state['profile'].get('monthly_income')}
+    - Monthly Income: ₹{state['profile'].get('monthly_income')}
     - Risk Tolerance: {state['profile'].get('risk_tolerance')}
     
     PAST TRANSACTIONS (Evidence):
@@ -159,8 +159,8 @@ def twin_agent(state: AgentState):
     ARGUMENT B (The Visionary): {state['visionary_opinion']}
     
     USER PROFILE:
-    Income: ${state['profile'].get('monthly_income')}
-    Expenses: ${state['profile'].get('monthly_expenses')}
+    Income: ₹{state['profile'].get('monthly_income')}
+    Expenses: ₹{state['profile'].get('monthly_expenses')}
     Role: {state['profile'].get('role')}
     
     TASK:

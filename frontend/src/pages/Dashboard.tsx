@@ -13,7 +13,9 @@ import {
   User,
   X,
   Save,
-  UploadCloud
+  UploadCloud,
+  CheckCircle,
+  XCircle
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -28,26 +30,21 @@ interface AgentMessage {
 }
 
 export default function Dashboard({ profile, onLogout, onProfileUpdate }: DashboardProps) {
-  // Chat State
   const [query, setQuery] = useState('');
   const [amount, setAmount] = useState('');
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [activeAgent, setActiveAgent] = useState<AgentType | 'idle'>('idle');
-  
+  const [awaitingDecision, setAwaitingDecision] = useState(false);
+  const [isProcessingDecision, setIsProcessingDecision] = useState(false);
+
   // Profile Modal State
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState(profile);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Scroll Ref
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const currentMessages = useRef<Record<AgentType, string>>({
-    miser: '',
-    visionary: '',
-    twin: '',
-  });
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -68,101 +65,155 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
           monthly_expenses: editForm.monthly_expenses,
           financial_goal: editForm.financial_goal,
           risk_tolerance: editForm.risk_tolerance,
-          income_type: editForm.income_type
+          income_type: editForm.income_type,
+          role: editForm.role
         })
         .eq('id', profile.id);
 
       if (error) throw error;
       
-      onProfileUpdate(editForm); // Update parent state
+      onProfileUpdate(editForm);
       setIsEditing(false);
     } catch (err) {
       console.error('Error updating profile:', err);
-      alert('Failed to save profile changes.');
+      alert('Failed to save profile changes. Check if the role is allowed.');
     } finally {
       setIsSaving(false);
     }
   };
 
-  // --- 2. HELPER TO UPDATE MESSAGES ---
-  const updateMessagesState = () => {
-    setMessages([
-      { agent: 'miser', content: currentMessages.current.miser },
-      { agent: 'visionary', content: currentMessages.current.visionary },
-      { agent: 'twin', content: currentMessages.current.twin },
-    ].filter((m) => m.content) as AgentMessage[]);
+  // --- 2. VERDICT HELPER ---
+  const parseVerdict = (text: string) => {
+    const upper = text.toUpperCase();
+    return upper.includes("REJECTED") || upper.startsWith("NO") || upper.includes("BLOCKED");
   };
 
-  // --- 3. HANDLE SUBMIT (API CALL) ---
+  // --- 3. HANDLE CHAT SUBMIT ---
   const handleSubmit = async () => {
-    if (!query.trim()) return;
+    if (!query.trim() || !amount) return;
 
     setIsLoading(true);
     setMessages([]);
     setActiveAgent('idle');
-    currentMessages.current = { miser: '', visionary: '', twin: '' };
+    setAwaitingDecision(false);
 
     try {
-      // Call Python Backend
       const res = await fetch('http://127.0.0.1:8000/api/debate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: query,
-          user_id: profile.id
+          user_id: profile.id,
+          amount: parseFloat(amount) || 0
         }),
       });
 
       if (!res.ok) throw new Error('Failed to fetch debate');
       const data = await res.json();
       
-      // Stream Miser Response
-      setActiveAgent('miser');
-      const miserText = data.miser || "I have nothing to say.";
-      for (let i = 0; i < miserText.length; i++) {
-        currentMessages.current.miser += miserText[i];
-        updateMessagesState();
-        await new Promise(r => setTimeout(r, 10));
-      }
-      await new Promise(r => setTimeout(r, 500));
+      const transcript = data.transcript || [];
+      
+      for (const turn of transcript) {
+        const agentName = turn.agent as AgentType;
+        const content = turn.content;
 
-      // Stream Visionary Response
-      setActiveAgent('visionary');
-      const visionaryText = data.visionary || "I see no future.";
-      for (let i = 0; i < visionaryText.length; i++) {
-        currentMessages.current.visionary += visionaryText[i];
-        updateMessagesState();
-        await new Promise(r => setTimeout(r, 10));
-      }
-      await new Promise(r => setTimeout(r, 500));
+        setActiveAgent(agentName);
+        
+        let displayedContent = "";
+        setMessages(prev => [...prev, { agent: agentName, content: "" }]);
 
-      // Stream Twin Response
-      setActiveAgent('twin');
-      const twinText = data.twin || "Proceed with caution.";
-      for (let i = 0; i < twinText.length; i++) {
-        currentMessages.current.twin += twinText[i];
-        updateMessagesState();
-        await new Promise(r => setTimeout(r, 10));
+        for (let i = 0; i < content.length; i++) {
+          displayedContent += content[i];
+          setMessages(prev => {
+            const newArr = [...prev];
+            newArr[newArr.length - 1] = { agent: agentName, content: displayedContent };
+            return newArr;
+          });
+          await new Promise(r => setTimeout(r, 10));
+        }
+
+        await new Promise(r => setTimeout(r, 600));
+        
+        if (agentName === 'twin') {
+           const isRejected = parseVerdict(content);
+           if (isRejected) {
+             setMessages(prev => [...prev, { agent: 'twin', content: "⛔ BLOCKED: Purchase rejected by Council." }]);
+             setAwaitingDecision(false);
+           } else {
+             setAwaitingDecision(true);
+           }
+        }
       }
 
       setActiveAgent('idle');
+
     } catch (error) {
       console.error('Error calling AI Council:', error);
-      setMessages(prev => [...prev, { agent: 'twin', content: "Error: The Council is offline. Is the backend running?" }]);
+      setMessages(prev => [...prev, { agent: 'twin', content: "Error: Council offline." }]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // --- 4. CALCULATIONS (Fixed: Placed before return) ---
+  // --- 4. HANDLE USER DECISION ---
+  const handleDecision = async (choice: 'buy' | 'save') => {
+    if (isProcessingDecision) return;
+    
+    if (choice === 'save') {
+      setMessages(prev => [...prev, { agent: 'miser', content: "Wise choice. Saving represents freedom." }]);
+      setAwaitingDecision(false);
+      setQuery('');
+      setAmount('');
+      return;
+    }
+
+    if (!amount) {
+      alert("Please enter the price amount.");
+      return;
+    }
+
+    setIsProcessingDecision(true);
+
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/execute-decision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: profile.id,
+          description: query,
+          amount: parseFloat(amount),
+          category: "Discretionary"
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to log transaction");
+
+      const result = await res.json();
+      
+      const actualDeduction = (result.deducted_amount !== undefined) 
+        ? result.deducted_amount 
+        : parseFloat(amount);
+
+      setMessages(prev => [...prev, { agent: 'visionary', content: `Transaction logged. Deducted: ₹${actualDeduction.toFixed(2)}` }]);
+      
+      const newExpenses = profile.monthly_expenses + actualDeduction;
+      onProfileUpdate({ ...profile, monthly_expenses: newExpenses });
+
+    } catch (error) {
+      console.error(error);
+      alert("Error logging transaction");
+    } finally {
+      setIsProcessingDecision(false);
+      setAwaitingDecision(false);
+      setQuery('');
+      setAmount('');
+    }
+  };
+
   const surplus = profile.monthly_income - profile.monthly_expenses;
-  const survivalDays = profile.monthly_expenses > 0 
-    ? Math.floor((surplus / profile.monthly_expenses) * 30) 
-    : 0;
 
   return (
     <div className="min-h-screen bg-white relative">
-      {/* Header */}
       <div className="border-b border-gray-300 bg-gray-50 backdrop-blur-sm sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
@@ -181,13 +232,10 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                 <div className="text-right">
                   <p className="text-xs text-gray-600">Monthly Surplus</p>
                   <p className={`text-lg font-bold ${surplus >= 0 ? 'text-black' : 'text-red-600'}`}>
-                    ${surplus.toFixed(2)}
+                    ₹{surplus.toFixed(2)}
                   </p>
                 </div>
-                <div className="text-right">
-                  <p className="text-xs text-gray-600">Runway</p>
-                  <p className="text-lg font-bold text-black">{survivalDays}d</p>
-                </div>
+                {/* RUNWAY REMOVED FROM HERE */}
               </div>
               <button
                 onClick={() => setIsProfileOpen(true)}
@@ -202,14 +250,13 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 py-6">
-        {/* Info Cards */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
           <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-sm font-medium text-gray-600">Monthly Income</h3>
               <TrendingUp className="w-4 h-4 text-black" />
             </div>
-            <p className="text-2xl font-bold text-black">${profile.monthly_income.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-black">₹{profile.monthly_income.toFixed(2)}</p>
             <p className="text-xs text-gray-500 mt-1 capitalize">{profile.income_type} income</p>
           </div>
 
@@ -218,7 +265,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
               <h3 className="text-sm font-medium text-gray-600">Monthly Expenses</h3>
               <DollarSign className="w-4 h-4 text-black" />
             </div>
-            <p className="text-2xl font-bold text-black">${profile.monthly_expenses.toFixed(2)}</p>
+            <p className="text-2xl font-bold text-black">₹{profile.monthly_expenses.toFixed(2)}</p>
             <p className="text-xs text-gray-500 mt-1">
               {profile.monthly_income > 0 ? ((profile.monthly_expenses / profile.monthly_income) * 100).toFixed(1) : 0}% of income
             </p>
@@ -234,7 +281,6 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
           </div>
         </div>
 
-        {/* Chat & Visualization */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="space-y-4">
             <div className="h-96">
@@ -243,35 +289,63 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
 
             <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
               <h3 className="text-lg font-semibold text-black mb-4">Consult the Council</h3>
-              <div className="space-y-3">
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleSubmit()}
-                  placeholder="Can I afford a $500 purchase?"
-                  className="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
-                  disabled={isLoading}
-                />
-                <div className="flex gap-3">
+              
+              {!awaitingDecision ? (
+                <div className="space-y-3">
                   <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="Amount ($)"
-                    className="flex-1 px-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSubmit()}
+                    placeholder="Can I afford a ₹5000 purchase?"
+                    className="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
                     disabled={isLoading}
                   />
-                  <button
-                    onClick={handleSubmit}
-                    disabled={isLoading || !query.trim()}
-                    className="px-6 py-3 bg-black text-white rounded-lg font-semibold hover:bg-gray-900 transition-all flex items-center space-x-2 disabled:opacity-50"
-                  >
-                    <Send className="w-4 h-4" />
-                    <span>{isLoading ? 'Debating...' : 'Ask'}</span>
-                  </button>
+                  <div className="flex gap-3">
+                    <input
+                      type="number"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      placeholder="Amount (₹)"
+                      className="flex-1 px-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
+                      disabled={isLoading}
+                    />
+                    <button
+                      onClick={handleSubmit}
+                      disabled={isLoading || !query.trim() || !amount}
+                      className="px-6 py-3 bg-black text-white rounded-lg font-semibold hover:bg-gray-900 transition-all flex items-center space-x-2 disabled:opacity-50"
+                    >
+                      <Send className="w-4 h-4" />
+                      <span>{isLoading ? 'Debating...' : 'Ask'}</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                  <p className="text-center text-black font-medium mb-4">The Council has spoken. What is your decision?</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button
+                      onClick={() => handleDecision('save')}
+                      disabled={isProcessingDecision}
+                      className="p-4 bg-red-100 border-2 border-red-500 rounded-xl hover:bg-red-200 transition-all flex flex-col items-center group disabled:opacity-50"
+                    >
+                      <XCircle className="w-8 h-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
+                      <span className="font-bold text-red-800">Listen to Miser</span>
+                      <span className="text-xs text-red-600">Don't Buy</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleDecision('buy')}
+                      disabled={isProcessingDecision}
+                      className="p-4 bg-green-100 border-2 border-green-500 rounded-xl hover:bg-green-200 transition-all flex flex-col items-center group disabled:opacity-50"
+                    >
+                      <CheckCircle className="w-8 h-8 text-green-600 mb-2 group-hover:scale-110 transition-transform" />
+                      <span className="font-bold text-green-800">Listen to Visionary</span>
+                      <span className="text-xs text-green-600">Buy (₹{amount || 0})</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -304,7 +378,6 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
         </div>
       </div>
 
-      {/* Profile Modal */}
       {isProfileOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
@@ -351,41 +424,47 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  
+                  {/* --- ROLE DROPDOWN (Safe List Only) --- */}
+                  <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200 md:col-span-2">
+                    <label className="text-xs text-yellow-800 uppercase font-bold">Current Role (Affects Agent Personality)</label>
+                    {isEditing ? (
+                      <select 
+                        className="w-full mt-1 bg-white border border-gray-300 rounded p-2 text-black font-medium"
+                        value={editForm.role || 'general'}
+                        onChange={(e) => setEditForm({...editForm, role: e.target.value})}
+                      >
+                        <option value="general">General Employee</option>
+                        <option value="student">Student (No/Low Income)</option>
+                        <option value="freelancer">Freelancer (Variable Income)</option>
+                      </select>
+                    ) : (
+                      <p className="text-lg font-bold text-black capitalize">
+                        {profile.role || 'General'}
+                      </p>
+                    )}
+                  </div>
+
                   <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
                     <label className="text-xs text-gray-500 uppercase font-bold">Monthly Income</label>
                     {isEditing ? (
-                      <input 
-                        type="number" 
-                        className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black"
-                        value={editForm.monthly_income}
-                        onChange={(e) => setEditForm({...editForm, monthly_income: parseFloat(e.target.value)})}
-                      />
+                      <input type="number" className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.monthly_income} onChange={(e) => setEditForm({...editForm, monthly_income: parseFloat(e.target.value)})} />
                     ) : (
-                      <p className="text-lg font-semibold text-black">${profile.monthly_income}</p>
+                      <p className="text-lg font-semibold text-black">₹{profile.monthly_income}</p>
                     )}
                   </div>
                   <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
                     <label className="text-xs text-gray-500 uppercase font-bold">Monthly Expenses</label>
                     {isEditing ? (
-                      <input 
-                        type="number" 
-                        className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black"
-                        value={editForm.monthly_expenses}
-                        onChange={(e) => setEditForm({...editForm, monthly_expenses: parseFloat(e.target.value)})}
-                      />
+                      <input type="number" className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.monthly_expenses} onChange={(e) => setEditForm({...editForm, monthly_expenses: parseFloat(e.target.value)})} />
                     ) : (
-                      <p className="text-lg font-semibold text-black">${profile.monthly_expenses}</p>
+                      <p className="text-lg font-semibold text-black">₹{profile.monthly_expenses}</p>
                     )}
                   </div>
                   <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 md:col-span-2">
                     <label className="text-xs text-gray-500 uppercase font-bold">Primary Goal</label>
                     {isEditing ? (
-                      <input 
-                        type="text" 
-                        className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black"
-                        value={editForm.financial_goal || ''}
-                        onChange={(e) => setEditForm({...editForm, financial_goal: e.target.value})}
-                      />
+                      <input type="text" className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.financial_goal || ''} onChange={(e) => setEditForm({...editForm, financial_goal: e.target.value})} />
                     ) : (
                       <p className="text-lg font-semibold text-black">{profile.financial_goal}</p>
                     )}
@@ -393,11 +472,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                   <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
                     <label className="text-xs text-gray-500 uppercase font-bold">Risk Tolerance</label>
                     {isEditing ? (
-                      <select 
-                        className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black"
-                        value={editForm.risk_tolerance}
-                        onChange={(e) => setEditForm({...editForm, risk_tolerance: e.target.value as 'low'|'medium'|'high'})}
-                      >
+                      <select className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.risk_tolerance} onChange={(e) => setEditForm({...editForm, risk_tolerance: e.target.value as 'low'|'medium'|'high'})}>
                         <option value="low">Low (Conservative)</option>
                         <option value="medium">Medium (Balanced)</option>
                         <option value="high">High (Aggressive)</option>
@@ -409,11 +484,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                    <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
                     <label className="text-xs text-gray-500 uppercase font-bold">Income Type</label>
                     {isEditing ? (
-                      <select 
-                        className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black"
-                        value={editForm.income_type}
-                        onChange={(e) => setEditForm({...editForm, income_type: e.target.value as 'fixed'|'variable'})}
-                      >
+                      <select className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.income_type} onChange={(e) => setEditForm({...editForm, income_type: e.target.value as 'fixed'|'variable'})}>
                         <option value="fixed">Fixed (Salary)</option>
                         <option value="variable">Variable (Freelance)</option>
                       </select>
@@ -428,9 +499,6 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                 <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
                   <UploadCloud className="w-5 h-5" /> Import History
                 </h3>
-                <p className="text-sm text-gray-600 mb-4">
-                  Upload a PDF or CSV bank statement to give the agents more context about your spending habits.
-                </p>
                 <div className="bg-gray-50 p-4 rounded-xl border border-dashed border-gray-300">
                    <StatementUploader userId={profile.id} />
                 </div>

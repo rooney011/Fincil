@@ -334,7 +334,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
                   </label>
                   <div className="relative">
                     <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">
-                      $
+                      ₹
                     </span>
                     <input
                       type="number"
@@ -342,7 +342,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
                       onChange={(e) =>
                         updateField('monthly_income', e.target.value)
                       }
-                      placeholder="5000"
+                      placeholder="50000"
                       className="w-full pl-8 pr-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
                     />
                   </div>
@@ -354,7 +354,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
                   </label>
                   <div className="relative">
                     <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">
-                      $
+                      ₹
                     </span>
                     <input
                       type="number"
@@ -362,7 +362,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
                       onChange={(e) =>
                         updateField('monthly_expenses', e.target.value)
                       }
-                      placeholder="3500"
+                      placeholder="35000"
                       className="w-full pl-8 pr-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
                     />
                   </div>
@@ -375,7 +375,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
                       <p className="text-sm text-black">
                         Monthly Surplus:{' '}
                         <span className="font-semibold">
-                          $
+                          ₹
                           {(
                             parseFloat(formData.monthly_income) -
                             parseFloat(formData.monthly_expenses)
