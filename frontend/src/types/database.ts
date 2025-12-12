@@ -30,6 +30,22 @@ export interface AgentConversation {
   twin_response: string | null;
   final_decision: string | null;
   created_at: string;
+  appeal_count?: number;
+  last_verdict?: string;
+}
+
+export interface AppealRound {
+  id: string;
+  conversation_id: string;
+  user_id: string;
+  original_query: string;
+  original_amount: number;
+  appeal_text: string;
+  appeal_round: number;
+  previous_debate_history: AgentMessage[];
+  new_debate_history: AgentMessage[];
+  final_verdict: string;
+  created_at: string;
 }
 
 export type AgentType = 'miser' | 'visionary' | 'twin';
@@ -37,5 +53,5 @@ export type AgentType = 'miser' | 'visionary' | 'twin';
 export interface AgentMessage {
   agent: AgentType;
   content: string;
-  status: 'thinking' | 'speaking' | 'idle';
+  status?: 'thinking' | 'speaking' | 'idle';
 }

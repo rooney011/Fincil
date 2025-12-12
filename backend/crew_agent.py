@@ -1,4 +1,4 @@
-import os
+﻿import os
 import time
 import re
 from crewai import Agent, Task, Crew, Process, LLM
@@ -17,13 +17,41 @@ llm_smart = LLM(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-# --- 2. HELPER: SAFE KICKOFF ---
-def safe_kickoff(crew_instance):
+# --- 1.5. FALLBACK RESPONSES (Prevents Turn Skipping) ---
+FALLBACK_RESPONSES = {
+    "miser": "I urge extreme caution here. Every rupee spent is a rupee that cannot be saved or invested for your future security.",
+    "visionary": "Consider the potential return on this investment. Strategic spending today can unlock growth and opportunities tomorrow.",
+    "referee": "CONTINUE",
+    "twin": "Based on the financial data presented, I recommend careful consideration of the math before making a final decision."
+}
+
+def get_fallback_response(agent_type: str = "twin") -> str:
+    """Returns a fallback response when an agent fails to produce output."""
+    return FALLBACK_RESPONSES.get(agent_type.lower(), "I need more context to provide advice.")
+
+# --- 2. HELPER: SAFE KICKOFF (With Response Validation) ---
+def safe_kickoff(crew_instance, agent_type: str = "twin", min_words: int = 5):
+    """
+    Executes crew with retry logic for:
+    - Rate limits (waits and retries)
+    - Empty/short responses (retries up to max attempts)
+    - Errors (returns fallback response)
+    """
     max_retries = 5
     for attempt in range(max_retries):
         try:
             raw_output = crew_instance.kickoff().raw
-            return clean_output(raw_output)
+            cleaned = clean_output(raw_output)
+            
+            # Validate response has substance (not empty or too short)
+            if cleaned and len(cleaned.split()) >= min_words:
+                return cleaned
+            
+            # Empty or too short - log and retry
+            print(f"⚠️ Turn skip detected (empty/short response): '{cleaned}' - Retry {attempt + 1}/{max_retries}")
+            time.sleep(1)
+            continue
+            
         except Exception as e:
             if "rate limit" in str(e).lower() or "429" in str(e):
                 wait_time = 5 * (attempt + 1)
@@ -31,14 +59,21 @@ def safe_kickoff(crew_instance):
                 time.sleep(wait_time)
             else:
                 print(f"Agent Error: {e}")
-                return "I apologize, but I lost my train of thought."
-    return "System Error: The Council is overloaded."
+                return get_fallback_response(agent_type)
+    
+    # All retries exhausted - use fallback
+    print(f"⚠️ All retries exhausted for {agent_type}. Using fallback response.")
+    return get_fallback_response(agent_type)
 
 # --- 3. HELPER: OUTPUT CLEANER ---
 def clean_output(text: str):
+    """Cleans LLM output by removing internal reasoning markers."""
+    if not text:
+        return None
     text = re.sub(r'(?m)^(Thought|Action|Observation):.*$', '', text)
     text = re.sub(r'(?m)^Title:.*$', '', text)
-    return text.strip()
+    cleaned = text.strip()
+    return cleaned if cleaned else None
 
 # --- 4. DYNAMIC PERSONA GENERATOR ---
 def get_role_context(role: str, emi_safety: str, is_education_loan: bool):
@@ -69,7 +104,7 @@ def get_role_context(role: str, emi_safety: str, is_education_loan: bool):
     return miser_trigger, visionary_trigger
 
 # --- 5. MAIN LOGIC ---
-def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float):
+def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float, appeal_context: str = None, is_appeal: bool = False):
     
     monthly_income = profile.get('monthly_income', 0) or 0
     monthly_expenses = profile.get('monthly_expenses', 0) or 0
@@ -124,6 +159,11 @@ def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float
 
     miser_instr, vis_instr = get_role_context(user_role, emi_safety, is_education_loan)
 
+    # --- APPEAL CONTEXT INJECTION ---
+    if is_appeal and appeal_context:
+        miser_instr += f"\n\n{appeal_context}\n\nYou MUST reconsider your position based on this new evidence."
+        vis_instr += f"\n\n{appeal_context}\n\nYou MUST reconsider your position based on this new evidence."
+
     stats = f"""
     ROLE: {user_role.upper()}
     SURPLUS: ₹{surplus}
@@ -133,13 +173,23 @@ def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float
     {math_verdict}
     """
 
-    # --- AGENTS ---
+    # --- AGENTS (With Strict Response Rules) ---
     miser = Agent(
         role='The Miser',
         goal='Risk Assessment',
-        backstory=f"""Strict financial guard.
-        INSTRUCTION: {miser_instr}
-        RULE: Speak directly. Max 2 sentences.""",
+        backstory=f"""You are THE MISER - a strict financial guardian who protects wealth.
+        
+CONTEXT: {miser_instr}
+
+MANDATORY RULES:
+1. You MUST ALWAYS respond with a substantive argument (2-3 sentences)
+2. NEVER skip your turn, stay silent, or say "pass"
+3. If data is unclear, still provide cautious advice
+4. Reference the surplus/price ratio when possible
+5. Speak directly and with conviction
+
+RESPONSE FORMAT: "[Financial concern]. [Evidence/Math]. [Your recommendation]."
+""",
         verbose=False,
         llm=llm_fast
     )
@@ -147,9 +197,19 @@ def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float
     visionary = Agent(
         role='The Visionary',
         goal='Growth Strategy',
-        backstory=f"""Optimistic growth coach.
-        INSTRUCTION: {vis_instr}
-        RULE: Speak directly. Max 2 sentences.""",
+        backstory=f"""You are THE VISIONARY - an optimistic growth coach who sees opportunity.
+        
+CONTEXT: {vis_instr}
+
+MANDATORY RULES:
+1. You MUST ALWAYS respond with a substantive argument (2-3 sentences)
+2. NEVER skip your turn, stay silent, or say "pass"
+3. Counter the Miser's concerns with growth perspective
+4. Focus on ROI, productivity, or life quality improvements
+5. Speak directly and with optimism
+
+RESPONSE FORMAT: "[Counter-argument]. [Potential benefit]. [Your recommendation]."
+""",
         verbose=False,
         llm=llm_fast
     )
@@ -157,12 +217,15 @@ def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float
     referee = Agent(
         role='Referee',
         goal='Check agreement',
-        backstory="""
-        Analyze the debate.
-        1. If Miser says "prudent", "safe", "affordable", "wise" or "I concede" -> WINNER: VISIONARY.
-        2. If Visionary says "risky", "dangerous", "unwise" or "I concede" -> WINNER: MISER.
-        3. Else -> CONTINUE.
-        """,
+        backstory="""You analyze debate progress.
+
+RULES:
+1. If Miser uses words like "prudent", "safe", "affordable", "wise" or "I concede" -> Output: WINNER: VISIONARY
+2. If Visionary uses words like "risky", "dangerous", "unwise" or "I concede" -> Output: WINNER: MISER
+3. Otherwise -> Output: CONTINUE
+
+You MUST output exactly one of: WINNER: VISIONARY, WINNER: MISER, or CONTINUE
+""",
         verbose=False,
         llm=llm_fast
     )
@@ -170,7 +233,16 @@ def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float
     twin = Agent(
         role='The Twin',
         goal='Final Verdict',
-        backstory="Final Judge. PRIORITIZE MATH OVER OPINIONS.",
+        backstory="""You are THE TWIN - the final judge who delivers verdicts.
+
+MANDATORY RULES:
+1. You MUST ALWAYS deliver a clear verdict (APPROVED or REJECTED)
+2. PRIORITIZE MATH OVER OPINIONS - if EMI > Surplus, REJECT
+3. Provide 2-3 sentences explaining your decision
+4. NEVER skip your turn or be indecisive
+
+RESPONSE FORMAT: "[APPROVED/REJECTED]. [Mathematical justification]. [Final advice]."
+""",
         verbose=False,
         llm=llm_smart
     )
@@ -188,23 +260,31 @@ def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float
         time.sleep(1)
         round_count += 1
         
-        # MISER
+        # MISER - Must respond with financial critique
         task_miser = Task(
-            description=f"Round {round_count}. Facts: {stats}. History: {debate_context}. Critique. Max 2 sentences.",
+            description=f"""Round {round_count}. 
+FACTS: {stats}
+DEBATE HISTORY: {debate_context}
+
+Your task: Provide a 2-3 sentence financial critique. You MUST respond - do not skip your turn.""",
             agent=miser,
-            expected_output="Argument"
+            expected_output="A 2-3 sentence financial critique with specific concerns"
         )
-        msg_m = safe_kickoff(Crew(agents=[miser], tasks=[task_miser], verbose=False))
+        msg_m = safe_kickoff(Crew(agents=[miser], tasks=[task_miser], verbose=False), agent_type="miser")
         debate_transcript.append({"agent": "miser", "content": msg_m})
         debate_context += f"\nMISER: {msg_m}"
         
-        # VISIONARY
+        # VISIONARY - Must respond with growth perspective
         task_vis = Task(
-            description=f"Round {round_count}. Facts: {stats}. History: {debate_context}. Rebut. Max 2 sentences.",
+            description=f"""Round {round_count}.
+FACTS: {stats}
+DEBATE HISTORY: {debate_context}
+
+Your task: Counter the Miser's argument with a 2-3 sentence rebuttal. You MUST respond - do not skip your turn.""",
             agent=visionary,
-            expected_output="Argument"
+            expected_output="A 2-3 sentence rebuttal focusing on growth/value"
         )
-        msg_v = safe_kickoff(Crew(agents=[visionary], tasks=[task_vis], verbose=False))
+        msg_v = safe_kickoff(Crew(agents=[visionary], tasks=[task_vis], verbose=False), agent_type="visionary")
         debate_transcript.append({"agent": "visionary", "content": msg_v})
         debate_context += f"\nVISIONARY: {msg_v}"
 
@@ -215,11 +295,15 @@ def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float
             continue 
 
         task_ref = Task(
-            description=f"Read: {msg_m} | {msg_v}. Output WINNER: [AGENT] or CONTINUE.",
+            description=f"""Analyze these arguments and determine if consensus is reached:
+MISER: {msg_m}
+VISIONARY: {msg_v}
+
+Output exactly one of: WINNER: VISIONARY, WINNER: MISER, or CONTINUE""",
             agent=referee,
-            expected_output="Status"
+            expected_output="Exactly: WINNER: VISIONARY, WINNER: MISER, or CONTINUE"
         )
-        status = safe_kickoff(Crew(agents=[referee], tasks=[task_ref], verbose=False)).upper()
+        status = safe_kickoff(Crew(agents=[referee], tasks=[task_ref], verbose=False), agent_type="referee", min_words=1).upper()
         
         if "WINNER" in status:
             consensus_reached = True
@@ -233,25 +317,27 @@ def run_fincil_crew(query: str, profile: dict, transactions: list, amount: float
 
     # TWIN INTERVENTION (The Safe-Guard)
     if not consensus_reached:
-        # STRICT TWIN LOGIC
+        # STRICT TWIN LOGIC - Must deliver final verdict
         task_twin = Task(
-            description=f"""
-            Argued 5 rounds. Break the tie.
-            
-            MATH VERDICT: {math_verdict}
-            SAFETY STATUS: {emi_safety}
-            
-            RULES:
-            1. IF Safety is "SAFE" or "CASH PURCHASE" -> YOU MUST APPROVE. (Unless it's a scam).
-            2. IF Safety is "DEFERRED" -> APPROVE (Education is good).
-            3. IF Safety is "DANGEROUS" -> REJECT.
-            
-            Verdict: APPROVED/REJECTED [Reason].
-            """,
+            description=f"""The agents debated for {round_count} rounds without reaching consensus. You must break the tie.
+
+MATH VERDICT: {math_verdict}
+SAFETY STATUS: {emi_safety}
+
+DEBATE HISTORY:
+{debate_context}
+
+DECISION RULES:
+1. IF Safety is SAFE or CASH PURCHASE -> YOU MUST APPROVE (unless it is a scam)
+2. IF Safety is DEFERRED -> APPROVE (Education investment is valuable)
+3. IF Safety is DANGEROUS -> REJECT (Math does not lie)
+
+You MUST respond with: [APPROVED/REJECTED]. [Mathematical justification]. [Final advice].
+Do NOT skip your turn or be indecisive.""",
             agent=twin,
-            expected_output="Verdict"
+            expected_output="A clear verdict (APPROVED or REJECTED) with 2-3 sentences of justification"
         )
-        final_msg = safe_kickoff(Crew(agents=[twin], tasks=[task_twin], verbose=False))
+        final_msg = safe_kickoff(Crew(agents=[twin], tasks=[task_twin], verbose=False), agent_type="twin")
         debate_transcript.append({"agent": "twin", "content": final_msg})
 
     return debate_transcript

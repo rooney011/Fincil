@@ -2,6 +2,7 @@ import os
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -43,6 +44,15 @@ class TransactionRequest(BaseModel):
     description: str
     amount: float
     category: str = "Uncategorized"
+
+class AppealRequest(BaseModel):
+    user_id: str
+    conversation_id: Optional[str] = None
+    original_query: str
+    amount: float
+    appeal_text: str
+    previous_debate: list = []
+    appeal_round: int = 1
 
 # --- 4. ENDPOINT: FILE UPLOAD ---
 @app.post("/upload")
@@ -230,4 +240,103 @@ def execute_decision(request: TransactionRequest):
 
     except Exception as e:
         print(f"Error executing decision: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- 6. HELPER FUNCTIONS FOR APPEALS ---
+def format_debate_history(messages: list) -> str:
+    """Format debate history into readable text for LLM context"""
+    formatted = ""
+    for msg in messages:
+        agent = msg.get('agent', 'unknown').upper()
+        content = msg.get('content', '')
+        formatted += f"{agent}: {content}\n"
+    return formatted
+
+def extract_verdict(transcript: list) -> str:
+    """Extract final verdict from transcript"""
+    if not transcript:
+        return "UNKNOWN"
+    
+    last_msg = transcript[-1] if transcript else {}
+    content = last_msg.get('content', '').upper()
+    
+    if 'REJECT' in content or 'BLOCKED' in content or 'DENIED' in content:
+        return 'REJECTED'
+    elif 'APPROV' in content or 'SAFE' in content or 'WISE' in content:
+        return 'APPROVED'
+    else:
+        return 'UNKNOWN'
+
+# --- 7. ENDPOINT: SUBMIT APPEAL (Rebuttal Loop) ---
+@app.post("/api/submit-appeal")
+def submit_appeal(request: AppealRequest):
+    print(f"Appeal #{request.appeal_round} submitted: {request.appeal_text[:50]}...")
+    
+    try:
+        # 1. Fetch Profile
+        profile_response = supabase.table("user_profiles").select("*").eq("id", request.user_id).execute()
+        profile = profile_response.data[0] if profile_response.data else {}
+
+        # 2. Vector Search Context (same as original debate)
+        emb_result = genai.embed_content(
+            model="models/text-embedding-004", 
+            content=request.original_query, 
+            task_type="retrieval_query"
+        )
+        rpc_response = supabase.rpc("match_transactions", {
+            "query_embedding": emb_result['embedding'], 
+            "match_threshold": 0.5, 
+            "match_count": 5, 
+            "filter_user_id": request.user_id
+        }).execute()
+        
+        # 3. Build Extended Context with Appeal
+        appeal_context = f"""
+*** PREVIOUS DEBATE ***
+{format_debate_history(request.previous_debate)}
+
+*** USER'S COUNTER-ARGUMENT (Appeal #{request.appeal_round}) ***
+"{request.appeal_text}"
+
+*** NEW INSTRUCTIONS ***
+Re-evaluate your stance considering this new information.
+The user has provided additional context that may change the financial calculus.
+Be open to changing your position if the new evidence is compelling.
+"""
+        
+        # 4. Run Crew with Appeal Context
+        transcript = run_fincil_crew(
+            query=request.original_query,
+            profile=profile,
+            transactions=rpc_response.data,
+            amount=request.amount,
+            appeal_context=appeal_context,
+            is_appeal=True
+        )
+        
+        # 5. Extract Verdict
+        final_verdict = extract_verdict(transcript)
+        
+        # 6. Store Appeal in Database
+        appeal_data = {
+            "conversation_id": request.conversation_id,
+            "user_id": request.user_id,
+            "original_query": request.original_query,
+            "original_amount": request.amount,
+            "appeal_text": request.appeal_text,
+            "appeal_round": request.appeal_round,
+            "previous_debate_history": request.previous_debate,
+            "new_debate_history": transcript,
+            "final_verdict": final_verdict
+        }
+        supabase.table("appeal_rounds").insert(appeal_data).execute()
+        
+        return {
+            "transcript": transcript,
+            "verdict": final_verdict,
+            "appeal_round": request.appeal_round
+        }
+    
+    except Exception as e:
+        print(f"Appeal Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

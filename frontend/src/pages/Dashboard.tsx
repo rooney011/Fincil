@@ -38,6 +38,12 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
   const [awaitingDecision, setAwaitingDecision] = useState(false);
   const [isProcessingDecision, setIsProcessingDecision] = useState(false);
 
+  // Appeal System State
+  const [isRejected, setIsRejected] = useState(false);
+  const [appealText, setAppealText] = useState('');
+  const [appealRound, setAppealRound] = useState(1);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+
   // Profile Modal State
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -71,7 +77,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
         .eq('id', profile.id);
 
       if (error) throw error;
-      
+
       onProfileUpdate(editForm);
       setIsEditing(false);
     } catch (err) {
@@ -110,15 +116,15 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
 
       if (!res.ok) throw new Error('Failed to fetch debate');
       const data = await res.json();
-      
+
       const transcript = data.transcript || [];
-      
+
       for (const turn of transcript) {
         const agentName = turn.agent as AgentType;
         const content = turn.content;
 
         setActiveAgent(agentName);
-        
+
         let displayedContent = "";
         setMessages(prev => [...prev, { agent: agentName, content: "" }]);
 
@@ -133,15 +139,11 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
         }
 
         await new Promise(r => setTimeout(r, 600));
-        
+
         if (agentName === 'twin') {
-           const isRejected = parseVerdict(content);
-           if (isRejected) {
-             setMessages(prev => [...prev, { agent: 'twin', content: "⛔ BLOCKED: Purchase rejected by Council." }]);
-             setAwaitingDecision(false);
-           } else {
-             setAwaitingDecision(true);
-           }
+          const rejected = parseVerdict(content);
+          setIsRejected(rejected);
+          setAwaitingDecision(true);  // Show decision dialog for both APPROVED and REJECTED
         }
       }
 
@@ -158,7 +160,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
   // --- 4. HANDLE USER DECISION ---
   const handleDecision = async (choice: 'buy' | 'save') => {
     if (isProcessingDecision) return;
-    
+
     if (choice === 'save') {
       setMessages(prev => [...prev, { agent: 'miser', content: "Wise choice. Saving represents freedom." }]);
       setAwaitingDecision(false);
@@ -189,13 +191,13 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
       if (!res.ok) throw new Error("Failed to log transaction");
 
       const result = await res.json();
-      
-      const actualDeduction = (result.deducted_amount !== undefined) 
-        ? result.deducted_amount 
+
+      const actualDeduction = (result.deducted_amount !== undefined)
+        ? result.deducted_amount
         : parseFloat(amount);
 
       setMessages(prev => [...prev, { agent: 'visionary', content: `Transaction logged. Deducted: ₹${actualDeduction.toFixed(2)}` }]);
-      
+
       const newExpenses = profile.monthly_expenses + actualDeduction;
       onProfileUpdate({ ...profile, monthly_expenses: newExpenses });
 
@@ -207,6 +209,79 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
       setAwaitingDecision(false);
       setQuery('');
       setAmount('');
+    }
+  };
+
+  // --- 5. HANDLE APPEAL SUBMISSION ---
+  const handleAppealSubmit = async () => {
+    if (!appealText.trim()) {
+      alert("Please provide your justification.");
+      return;
+    }
+
+    setIsLoading(true);
+    setAwaitingDecision(false);
+
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/submit-appeal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: profile.id,
+          conversation_id: conversationId,
+          original_query: query,
+          amount: parseFloat(amount),
+          appeal_text: appealText,
+          previous_debate: messages,
+          appeal_round: appealRound
+        }),
+      });
+
+      if (!res.ok) throw new Error('Appeal failed');
+      const data = await res.json();
+
+      // Add appeal marker to transcript
+      setMessages(prev => [...prev, {
+        agent: 'twin',
+        content: `📢 APPEAL #${appealRound}: "${appealText}"`
+      }]);
+
+      // Stream new transcript
+      for (const turn of data.transcript) {
+        setActiveAgent(turn.agent);
+        let displayedContent = "";
+        setMessages(prev => [...prev, { agent: turn.agent, content: "" }]);
+
+        for (let i = 0; i < turn.content.length; i++) {
+          displayedContent += turn.content[i];
+          setMessages(prev => {
+            const newArr = [...prev];
+            newArr[newArr.length - 1] = { agent: turn.agent, content: displayedContent };
+            return newArr;
+          });
+          await new Promise(r => setTimeout(r, 10));
+        }
+        await new Promise(r => setTimeout(r, 600));
+      }
+
+      // Check new verdict
+      const newVerdict = data.verdict;
+      setIsRejected(newVerdict === 'REJECTED');
+      setAwaitingDecision(true);  // Show decision dialog again
+
+      if (newVerdict === 'REJECTED') {
+        setAppealRound(prev => prev + 1);
+      }
+
+      setAppealText('');
+      setActiveAgent('idle');
+
+    } catch (error) {
+      console.error('Appeal error:', error);
+      alert('Failed to submit appeal');
+      setAwaitingDecision(true);  // Allow retry
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -282,14 +357,11 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Left Column - Consult the Council + Appeal Box */}
           <div className="space-y-4">
-            <div className="h-96">
-              <CouncilChamber activeAgent={activeAgent} />
-            </div>
-
             <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
               <h3 className="text-lg font-semibold text-black mb-4">Consult the Council</h3>
-              
+
               {!awaitingDecision ? (
                 <div className="space-y-3">
                   <input
@@ -347,9 +419,85 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                 </div>
               )}
             </div>
+
+            {/* Appeal Box - Below Consult Section */}
+            {awaitingDecision && isRejected && (
+              <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="space-y-3">
+                  <div className="bg-red-50 border-2 border-red-400 rounded-lg p-4">
+                    <h4 className="font-bold text-red-800 mb-2 flex items-center gap-2">
+                      <XCircle className="w-5 h-5" />
+                      Purchase Rejected - Submit Appeal
+                    </h4>
+                    <p className="text-sm text-red-700 mb-3">
+                      The Council has blocked this purchase. Provide justification to reconsider:
+                    </p>
+                    <textarea
+                      value={appealText}
+                      onChange={(e) => setAppealText(e.target.value)}
+                      placeholder="e.g., 'I cancelled my Netflix subscription to afford this'"
+                      className="w-full px-4 py-3 bg-white border border-red-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-red-500 min-h-[80px] resize-none"
+                      disabled={isLoading}
+                    />
+                    <div className="flex gap-2 mt-3">
+                      <button
+                        onClick={() => {
+                          setAwaitingDecision(false);
+                          setIsRejected(false);
+                          setQuery('');
+                          setAmount('');
+                          setAppealText('');
+                          setAppealRound(1);
+                        }}
+                        className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-medium"
+                      >
+                        Accept Rejection
+                      </button>
+                      <button
+                        onClick={handleAppealSubmit}
+                        disabled={isLoading || !appealText.trim()}
+                        className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 disabled:opacity-50"
+                      >
+                        {isLoading ? 'Submitting...' : `Submit Appeal #${appealRound}`}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Approved Decision Box - Below Consult Section */}
+            {awaitingDecision && !isRejected && (
+              <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <p className="text-center text-black font-medium mb-4">
+                  The Council has approved. What is your decision?
+                </p>
+                <div className="grid grid-cols-2 gap-4">
+                  <button
+                    onClick={() => handleDecision('save')}
+                    disabled={isProcessingDecision}
+                    className="p-4 bg-red-100 border-2 border-red-500 rounded-xl hover:bg-red-200 transition-all flex flex-col items-center group disabled:opacity-50"
+                  >
+                    <XCircle className="w-8 h-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
+                    <span className="font-bold text-red-800">Listen to Miser</span>
+                    <span className="text-xs text-red-600">Don't Buy</span>
+                  </button>
+                  <button
+                    onClick={() => handleDecision('buy')}
+                    disabled={isProcessingDecision}
+                    className="p-4 bg-green-100 border-2 border-green-500 rounded-xl hover:bg-green-200 transition-all flex flex-col items-center group disabled:opacity-50"
+                  >
+                    <CheckCircle className="w-8 h-8 text-green-600 mb-2 group-hover:scale-110 transition-transform" />
+                    <span className="font-bold text-green-800">Listen to Visionary</span>
+                    <span className="text-xs text-green-600">Buy (₹{amount || 0})</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 flex flex-col h-[600px]">
+          {/* Right Column - Council Transcript */}
+          <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 flex flex-col h-[700px]">
             <h3 className="text-lg font-semibold text-black mb-4">Council Transcript</h3>
             <div className="flex-1 overflow-y-auto pr-2 space-y-4">
               {messages.length === 0 && !isLoading && (
@@ -360,13 +508,12 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
               {messages.map((msg, idx) => (
                 <div
                   key={idx}
-                  className={`p-4 rounded-lg border-l-4 ${
-                    msg.agent === 'miser'
-                      ? 'bg-red-50 border-red-500'
-                      : msg.agent === 'visionary'
+                  className={`p-4 rounded-lg border-l-4 ${msg.agent === 'miser'
+                    ? 'bg-red-50 border-red-500'
+                    : msg.agent === 'visionary'
                       ? 'bg-green-50 border-green-500'
                       : 'bg-amber-50 border-amber-500'
-                  }`}
+                    }`}
                 >
                   <p className="text-xs font-bold uppercase mb-1 text-gray-500">{msg.agent}</p>
                   <p className="text-sm text-black">{msg.content}</p>
@@ -385,7 +532,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
               <h2 className="text-xl font-bold text-black flex items-center gap-2">
                 <User className="w-5 h-5" /> Profile Settings
               </h2>
-              <button 
+              <button
                 onClick={() => { setIsProfileOpen(false); setIsEditing(false); }}
                 className="p-2 hover:bg-gray-100 rounded-full text-gray-500"
               >
@@ -398,7 +545,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                 <div className="flex items-center justify-between">
                   <h3 className="text-lg font-semibold text-gray-800">Your Financial Context</h3>
                   {!isEditing ? (
-                    <button 
+                    <button
                       onClick={() => setIsEditing(true)}
                       className="text-sm font-medium text-blue-600 hover:text-blue-800 underline"
                     >
@@ -406,13 +553,13 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                     </button>
                   ) : (
                     <div className="flex gap-2">
-                       <button 
+                      <button
                         onClick={() => { setIsEditing(false); setEditForm(profile); }}
                         className="text-sm font-medium text-gray-500 hover:text-gray-700 px-3 py-1"
                       >
                         Cancel
                       </button>
-                      <button 
+                      <button
                         onClick={handleSaveProfile}
                         disabled={isSaving}
                         className="flex items-center gap-1 text-sm font-medium bg-black text-white px-3 py-1 rounded-lg hover:bg-gray-800 disabled:opacity-50"
@@ -424,15 +571,15 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  
+
                   {/* --- ROLE DROPDOWN (Safe List Only) --- */}
                   <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200 md:col-span-2">
                     <label className="text-xs text-yellow-800 uppercase font-bold">Current Role (Affects Agent Personality)</label>
                     {isEditing ? (
-                      <select 
+                      <select
                         className="w-full mt-1 bg-white border border-gray-300 rounded p-2 text-black font-medium"
                         value={editForm.role || 'general'}
-                        onChange={(e) => setEditForm({...editForm, role: e.target.value})}
+                        onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
                       >
                         <option value="general">General Employee</option>
                         <option value="student">Student (No/Low Income)</option>
@@ -448,7 +595,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                   <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
                     <label className="text-xs text-gray-500 uppercase font-bold">Monthly Income</label>
                     {isEditing ? (
-                      <input type="number" className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.monthly_income} onChange={(e) => setEditForm({...editForm, monthly_income: parseFloat(e.target.value)})} />
+                      <input type="number" className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.monthly_income} onChange={(e) => setEditForm({ ...editForm, monthly_income: parseFloat(e.target.value) })} />
                     ) : (
                       <p className="text-lg font-semibold text-black">₹{profile.monthly_income}</p>
                     )}
@@ -456,7 +603,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                   <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
                     <label className="text-xs text-gray-500 uppercase font-bold">Monthly Expenses</label>
                     {isEditing ? (
-                      <input type="number" className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.monthly_expenses} onChange={(e) => setEditForm({...editForm, monthly_expenses: parseFloat(e.target.value)})} />
+                      <input type="number" className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.monthly_expenses} onChange={(e) => setEditForm({ ...editForm, monthly_expenses: parseFloat(e.target.value) })} />
                     ) : (
                       <p className="text-lg font-semibold text-black">₹{profile.monthly_expenses}</p>
                     )}
@@ -464,7 +611,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                   <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 md:col-span-2">
                     <label className="text-xs text-gray-500 uppercase font-bold">Primary Goal</label>
                     {isEditing ? (
-                      <input type="text" className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.financial_goal || ''} onChange={(e) => setEditForm({...editForm, financial_goal: e.target.value})} />
+                      <input type="text" className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.financial_goal || ''} onChange={(e) => setEditForm({ ...editForm, financial_goal: e.target.value })} />
                     ) : (
                       <p className="text-lg font-semibold text-black">{profile.financial_goal}</p>
                     )}
@@ -472,7 +619,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                   <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
                     <label className="text-xs text-gray-500 uppercase font-bold">Risk Tolerance</label>
                     {isEditing ? (
-                      <select className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.risk_tolerance} onChange={(e) => setEditForm({...editForm, risk_tolerance: e.target.value as 'low'|'medium'|'high'})}>
+                      <select className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.risk_tolerance} onChange={(e) => setEditForm({ ...editForm, risk_tolerance: e.target.value as 'low' | 'medium' | 'high' })}>
                         <option value="low">Low (Conservative)</option>
                         <option value="medium">Medium (Balanced)</option>
                         <option value="high">High (Aggressive)</option>
@@ -481,10 +628,10 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                       <p className="text-lg font-semibold text-black capitalize">{profile.risk_tolerance}</p>
                     )}
                   </div>
-                   <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                  <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
                     <label className="text-xs text-gray-500 uppercase font-bold">Income Type</label>
                     {isEditing ? (
-                      <select className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.income_type} onChange={(e) => setEditForm({...editForm, income_type: e.target.value as 'fixed'|'variable'})}>
+                      <select className="w-full mt-1 bg-white border border-gray-300 rounded p-1 text-black" value={editForm.income_type} onChange={(e) => setEditForm({ ...editForm, income_type: e.target.value as 'fixed' | 'variable' })}>
                         <option value="fixed">Fixed (Salary)</option>
                         <option value="variable">Variable (Freelance)</option>
                       </select>
@@ -500,7 +647,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                   <UploadCloud className="w-5 h-5" /> Import History
                 </h3>
                 <div className="bg-gray-50 p-4 rounded-xl border border-dashed border-gray-300">
-                   <StatementUploader userId={profile.id} />
+                  <StatementUploader userId={profile.id} />
                 </div>
               </div>
 
