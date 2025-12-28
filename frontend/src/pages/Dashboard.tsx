@@ -104,7 +104,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
     setAwaitingDecision(false);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/debate', {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/api/debate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -177,7 +177,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
     setIsProcessingDecision(true);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/execute-decision', {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/api/execute-decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -223,7 +223,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
     setAwaitingDecision(false);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/submit-appeal', {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/api/submit-appeal`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

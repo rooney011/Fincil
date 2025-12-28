@@ -11,6 +11,7 @@ import google.generativeai as genai
 from parser_service import parse_statement_with_ai
 # We import the new CrewAI engine here
 from crew_agent import run_fincil_crew 
+import config  # Import the new config
 
 load_dotenv()
 
@@ -27,7 +28,7 @@ app = FastAPI()
 # --- 2. CORS (Security) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=config.ALLOWED_ORIGINS, 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -72,7 +73,7 @@ async def upload_transactions(
             # Generate Embedding
             text_to_embed = f"{tx['description']} {tx['category']}"
             result = genai.embed_content(
-                model="models/text-embedding-004",
+                model=config.EMBEDDING_MODEL,
                 content=text_to_embed,
                 task_type="retrieval_document"
             )
@@ -108,10 +109,10 @@ def run_debate(request: DebateRequest):
 
         # 2. Vector Search Context
         emb_result = genai.embed_content(
-            model="models/text-embedding-004", content=request.query, task_type="retrieval_query"
+            model=config.EMBEDDING_MODEL, content=request.query, task_type="retrieval_query"
         )
         rpc_response = supabase.rpc("match_transactions", {
-            "query_embedding": emb_result['embedding'], "match_threshold": 0.5, "match_count": 5, "filter_user_id": request.user_id
+            "query_embedding": emb_result['embedding'], "match_threshold": config.MATCH_THRESHOLD, "match_count": config.MATCH_COUNT, "filter_user_id": request.user_id
         }).execute()
         
         # 3. Run the Looping Crew (Returns List of turns)
@@ -149,8 +150,7 @@ def execute_decision(request: TransactionRequest):
         is_deferred = False
         
         # Keywords
-        edu_keywords = ["degree", "course", "college", "tuition", "study", "university", "school", "mba", "masters"]
-        is_education = any(kw in request.description.lower() for kw in edu_keywords)
+        is_education = any(kw in request.description.lower() for kw in config.EDU_KEYWORDS)
         
         # LOGIC TREE
         if request.amount <= current_surplus:
@@ -171,8 +171,7 @@ def execute_decision(request: TransactionRequest):
         else:
             # CASE C: STANDARD EMI (Laptop, Car, etc.)
             # If price > surplus, we MUST switch to EMI.
-            interest_rate = 0.15
-            total_cost = request.amount * (1 + interest_rate)
+            total_cost = request.amount * (1 + config.INTEREST_RATE)
             emi = total_cost / 12
             
             # CRITICAL GUARDRAIL:
@@ -197,7 +196,7 @@ def execute_decision(request: TransactionRequest):
         # 3. Embedding
         text_to_embed = f"{final_description} {request.category}"
         embedding_result = genai.embed_content(
-            model="models/text-embedding-004", content=text_to_embed, task_type="retrieval_document"
+            model=config.EMBEDDING_MODEL, content=text_to_embed, task_type="retrieval_document"
         )
         
         # 4. Insert Transaction
