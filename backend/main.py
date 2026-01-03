@@ -12,6 +12,17 @@ from parser_service import parse_statement_with_ai
 # We import the new CrewAI engine here
 from crew_agent import run_fincil_crew 
 import config  # Import the new config
+# Expense analysis imports
+from expense_analysis import (
+    get_expense_summary, 
+    get_category_breakdown, 
+    get_spending_trends,
+    get_recent_transactions,
+    format_transaction_for_display
+)
+from expense_agent import run_expense_qa, get_suggested_questions
+# Income extraction for appeals
+from income_extractor import extract_income_from_text, format_income_message
 
 load_dotenv()
 
@@ -54,6 +65,14 @@ class AppealRequest(BaseModel):
     appeal_text: str
     previous_debate: list = []
     appeal_round: int = 1
+
+class ExpenseRequest(BaseModel):
+    user_id: str
+    days: int = 30
+
+class ExpenseQARequest(BaseModel):
+    user_id: str
+    question: str
 
 # --- 4. ENDPOINT: FILE UPLOAD ---
 @app.post("/upload")
@@ -210,7 +229,8 @@ def execute_decision(request: TransactionRequest):
             "description": final_description,
             "category": request.category if not is_deferred else "Liabilities",
             "transaction_date": "now()",
-            "embedding": embedding_result['embedding']
+            "embedding": embedding_result['embedding'],
+            "source": "logged"  # Mark as logged from AI Council decision
         }
         
         supabase.table("transactions").insert(transaction_data).execute()
@@ -220,12 +240,25 @@ def execute_decision(request: TransactionRequest):
         
         new_expenses = current_expenses + deducted_amount
         
-        # FINAL SAFETY CHECK: If this updates makes expenses > income, surplus becomes negative.
-        # If you strictly want to prevent negative surplus in the DB:
-        if new_expenses > monthly_income:
-             print("WARNING: Transaction creates negative surplus.")
-             # You could throw an error here to block it entirely:
-             # raise HTTPException(status_code=400, detail="Insufficient funds even for EMI.")
+        # FINAL SAFETY CHECK: Prevent negative surplus
+        # Calculate what the new surplus would be
+        new_surplus = monthly_income - new_expenses
+        
+        if new_surplus < 0:
+            # Transaction would create negative balance - REJECT IT
+            available_surplus = monthly_income - current_expenses
+            shortfall = abs(new_surplus)
+            
+            error_msg = (
+                f"Insufficient funds to complete this transaction. "
+                f"Available surplus: ₹{available_surplus:,.2f}, "
+                f"Required amount: ₹{deducted_amount:,.2f}, "
+                f"Shortfall: ₹{shortfall:,.2f}. "
+                f"Please adjust the purchase amount or add more income."
+            )
+            
+            print(f"TRANSACTION BLOCKED: {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
         
         supabase.table("user_profiles").update({
             "monthly_expenses": new_expenses
@@ -275,6 +308,36 @@ def submit_appeal(request: AppealRequest):
         # 1. Fetch Profile
         profile_response = supabase.table("user_profiles").select("*").eq("id", request.user_id).execute()
         profile = profile_response.data[0] if profile_response.data else {}
+        
+        # 1.5. EXTRACT INCOME FROM APPEAL TEXT
+        income_extraction = extract_income_from_text(request.appeal_text)
+        extracted_income = income_extraction.get('amount', 0) or 0
+        income_confidence = income_extraction.get('confidence', 'none')
+        income_message = format_income_message(income_extraction)
+        
+        # If income detected, update user profile BEFORE crew evaluation
+        profile_updated = False
+        if extracted_income > 0:
+            print(f"Extracted income: ₹{extracted_income} (confidence: {income_confidence})")
+            
+            # Get current monthly income
+            current_income = profile.get('monthly_income', 0) or 0
+            
+            # Add extracted income to monthly income
+            # Note: This treats all income as recurring. For one-time income,
+            # you could add a separate field or create a temporary "windfall" adjustment.
+            new_monthly_income = current_income + extracted_income
+            
+            # Update profile in database
+            supabase.table("user_profiles").update({
+                "monthly_income": new_monthly_income
+            }).eq("id", request.user_id).execute()
+            
+            # Update local profile object for crew evaluation
+            profile['monthly_income'] = new_monthly_income
+            profile_updated = True
+            
+            print(f"Updated monthly_income: ₹{current_income} → ₹{new_monthly_income}")
 
         # 2. Vector Search Context (same as original debate)
         emb_result = genai.embed_content(
@@ -290,12 +353,15 @@ def submit_appeal(request: AppealRequest):
         }).execute()
         
         # 3. Build Extended Context with Appeal
+        # Include income info if detected
+        income_context = f"\n\n*** IMPORTANT: USER HAS ADDITIONAL FUNDS ***\nThe user mentioned receiving ₹{extracted_income:,.2f} in new income.\nThis has been added to their monthly income for re-evaluation.\n" if extracted_income > 0 else ""
+        
         appeal_context = f"""
 *** PREVIOUS DEBATE ***
 {format_debate_history(request.previous_debate)}
 
 *** USER'S COUNTER-ARGUMENT (Appeal #{request.appeal_round}) ***
-"{request.appeal_text}"
+"{request.appeal_text}"{income_context}
 
 *** NEW INSTRUCTIONS ***
 Re-evaluate your stance considering this new information.
@@ -303,10 +369,10 @@ The user has provided additional context that may change the financial calculus.
 Be open to changing your position if the new evidence is compelling.
 """
         
-        # 4. Run Crew with Appeal Context
+        # 4. Run Crew with Appeal Context (using updated profile)
         transcript = run_fincil_crew(
             query=request.original_query,
-            profile=profile,
+            profile=profile,  # This now has updated income if applicable
             transactions=rpc_response.data,
             amount=request.amount,
             appeal_context=appeal_context,
@@ -333,9 +399,143 @@ Be open to changing your position if the new evidence is compelling.
         return {
             "transcript": transcript,
             "verdict": final_verdict,
-            "appeal_round": request.appeal_round
+            "appeal_round": request.appeal_round,
+            "extracted_income": extracted_income if extracted_income > 0 else None,
+            "income_message": income_message if income_message else None,
+            "profile_updated": profile_updated
         }
     
     except Exception as e:
         print(f"Appeal Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- 8. EXPENSE ANALYSIS ENDPOINTS ---
+
+@app.post("/api/expense/summary")
+def get_summary(request: ExpenseRequest):
+    """Get overall expense summary for a user"""
+    try:
+        from datetime import datetime, timedelta
+        
+        # Calculate date range
+        cutoff_date = datetime.now() - timedelta(days=request.days)
+        
+        # Fetch transactions
+        response = supabase.table("transactions").select("*").eq(
+            "user_id", request.user_id
+        ).gte("transaction_date", cutoff_date.isoformat()).execute()
+        
+        transactions = response.data or []
+        summary = get_expense_summary(transactions, request.days)
+        
+        return summary
+        
+    except Exception as e:
+        print(f"Summary Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/expense/categories")
+def get_categories(request: ExpenseRequest):
+    """Get spending breakdown by category"""
+    try:
+        from datetime import datetime, timedelta
+        
+        cutoff_date = datetime.now() - timedelta(days=request.days)
+        
+        response = supabase.table("transactions").select("*").eq(
+            "user_id", request.user_id
+        ).gte("transaction_date", cutoff_date.isoformat()).execute()
+        
+        transactions = response.data or []
+        breakdown = get_category_breakdown(transactions)
+        
+        return {"categories": breakdown}
+        
+    except Exception as e:
+        print(f"Categories Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/expense/trends")
+def get_trends(request: ExpenseRequest):
+    """Get spending trends over time"""
+    try:
+        from datetime import datetime, timedelta
+        
+        cutoff_date = datetime.now() - timedelta(days=request.days)
+        
+        response = supabase.table("transactions").select("*").eq(
+            "user_id", request.user_id
+        ).gte("transaction_date", cutoff_date.isoformat()).execute()
+        
+        transactions = response.data or []
+        
+        # Determine period based on days
+        period = "daily" if request.days <= 7 else "weekly" if request.days <= 60 else "monthly"
+        trends = get_spending_trends(transactions, period)
+        
+        return {"trends": trends, "period": period}
+        
+    except Exception as e:
+        print(f"Trends Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/expense/transactions")
+def get_transactions(request: ExpenseRequest):
+    """Get transaction history"""
+    try:
+        from datetime import datetime, timedelta
+        
+        cutoff_date = datetime.now() - timedelta(days=request.days)
+        
+        response = supabase.table("transactions").select("*").eq(
+            "user_id", request.user_id
+        ).gte("transaction_date", cutoff_date.isoformat()).order(
+            "transaction_date", desc=True
+        ).execute()
+        
+        transactions = response.data or []
+        formatted = [format_transaction_for_display(tx) for tx in transactions]
+        
+        return {"transactions": formatted, "count": len(formatted)}
+        
+    except Exception as e:
+        print(f"Transactions Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/expense/ask")
+def ask_expense_question(request: ExpenseQARequest):
+    """AI-powered Q&A about expenses"""
+    try:
+        from datetime import datetime, timedelta
+        
+        # Fetch transactions (last 30 days for context)
+        cutoff_date = datetime.now() - timedelta(days=30)
+        
+        tx_response = supabase.table("transactions").select("*").eq(
+            "user_id", request.user_id
+        ).gte("transaction_date", cutoff_date.isoformat()).execute()
+        
+        # Fetch profile
+        profile_response = supabase.table("user_profiles").select("*").eq(
+            "id", request.user_id
+        ).execute()
+        
+        transactions = tx_response.data or []
+        profile = profile_response.data[0] if profile_response.data else {}
+        
+        # Run AI agent
+        answer = run_expense_qa(request.question, transactions, profile)
+        suggestions = get_suggested_questions(transactions)
+        
+        return {
+            "answer": answer,
+            "suggested_questions": suggestions
+        }
+        
+    except Exception as e:
+        print(f"Expense QA Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

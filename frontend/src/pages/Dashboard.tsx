@@ -3,6 +3,8 @@ import { UserProfile, AgentType } from '../types/database';
 import { supabase } from '../lib/supabase';
 import CouncilChamber from '../components/CouncilChamber';
 import StatementUploader from '../components/StatementUploader';
+import ExpenseAnalysis from './ExpenseAnalysis';
+import TransactionHistory from './TransactionHistory';
 import {
   Send,
   TrendingUp,
@@ -15,7 +17,10 @@ import {
   Save,
   UploadCloud,
   CheckCircle,
-  XCircle
+  XCircle,
+  MessageSquare,
+  Receipt,
+  BarChart3
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -30,6 +35,9 @@ interface AgentMessage {
 }
 
 export default function Dashboard({ profile, onLogout, onProfileUpdate }: DashboardProps) {
+  // Tab State
+  const [activeTab, setActiveTab] = useState<'council' | 'expenses' | 'history'>('council');
+
   const [query, setQuery] = useState('');
   const [amount, setAmount] = useState('');
   const [messages, setMessages] = useState<AgentMessage[]>([]);
@@ -238,6 +246,7 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
       });
 
       if (!res.ok) throw new Error('Appeal failed');
+
       const data = await res.json();
 
       // Add appeal marker to transcript
@@ -245,6 +254,21 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
         agent: 'twin',
         content: `📢 APPEAL #${appealRound}: "${appealText}"`
       }]);
+
+      // If income was extracted from appeal, notify user
+      if (data.extracted_income && data.income_message) {
+        setMessages(prev => [...prev, {
+          agent: 'twin',
+          content: data.income_message
+        }]);
+
+        // Update profile state with new income if profile was updated
+        if (data.profile_updated) {
+          const updatedProfile = { ...profile };
+          updatedProfile.monthly_income = (updatedProfile.monthly_income || 0) + data.extracted_income;
+          onProfileUpdate(updatedProfile);
+        }
+      }
 
       // Stream new transcript
       for (const turn of data.transcript) {
@@ -323,208 +347,263 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-4 py-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-          <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-medium text-gray-600">Monthly Income</h3>
-              <TrendingUp className="w-4 h-4 text-black" />
-            </div>
-            <p className="text-2xl font-bold text-black">₹{profile.monthly_income.toFixed(2)}</p>
-            <p className="text-xs text-gray-500 mt-1 capitalize">{profile.income_type} income</p>
-          </div>
-
-          <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-medium text-gray-600">Monthly Expenses</h3>
-              <DollarSign className="w-4 h-4 text-black" />
-            </div>
-            <p className="text-2xl font-bold text-black">₹{profile.monthly_expenses.toFixed(2)}</p>
-            <p className="text-xs text-gray-500 mt-1">
-              {profile.monthly_income > 0 ? ((profile.monthly_expenses / profile.monthly_income) * 100).toFixed(1) : 0}% of income
-            </p>
-          </div>
-
-          <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-medium text-gray-600">Financial Goal</h3>
-              <Calendar className="w-4 h-4 text-black" />
-            </div>
-            <p className="text-lg font-semibold text-black truncate">{profile.financial_goal}</p>
-            <p className="text-xs text-gray-500 mt-1 capitalize">{profile.risk_tolerance} risk tolerance</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Left Column - Consult the Council + Appeal Box */}
-          <div className="space-y-4">
-            <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
-              <h3 className="text-lg font-semibold text-black mb-4">Consult the Council</h3>
-
-              {!awaitingDecision ? (
-                <div className="space-y-3">
-                  <input
-                    type="text"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleSubmit()}
-                    placeholder="Can I afford a ₹5000 purchase?"
-                    className="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
-                    disabled={isLoading}
-                  />
-                  <div className="flex gap-3">
-                    <input
-                      type="number"
-                      value={amount}
-                      onChange={(e) => setAmount(e.target.value)}
-                      placeholder="Amount (₹)"
-                      className="flex-1 px-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
-                      disabled={isLoading}
-                    />
-                    <button
-                      onClick={handleSubmit}
-                      disabled={isLoading || !query.trim() || !amount}
-                      className="px-6 py-3 bg-black text-white rounded-lg font-semibold hover:bg-gray-900 transition-all flex items-center space-x-2 disabled:opacity-50"
-                    >
-                      <Send className="w-4 h-4" />
-                      <span>{isLoading ? 'Debating...' : 'Ask'}</span>
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <p className="text-center text-black font-medium mb-4">The Council has spoken. What is your decision?</p>
-                  <div className="grid grid-cols-2 gap-4">
-                    <button
-                      onClick={() => handleDecision('save')}
-                      disabled={isProcessingDecision}
-                      className="p-4 bg-red-100 border-2 border-red-500 rounded-xl hover:bg-red-200 transition-all flex flex-col items-center group disabled:opacity-50"
-                    >
-                      <XCircle className="w-8 h-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
-                      <span className="font-bold text-red-800">Listen to Miser</span>
-                      <span className="text-xs text-red-600">Don't Buy</span>
-                    </button>
-
-                    <button
-                      onClick={() => handleDecision('buy')}
-                      disabled={isProcessingDecision}
-                      className="p-4 bg-green-100 border-2 border-green-500 rounded-xl hover:bg-green-200 transition-all flex flex-col items-center group disabled:opacity-50"
-                    >
-                      <CheckCircle className="w-8 h-8 text-green-600 mb-2 group-hover:scale-110 transition-transform" />
-                      <span className="font-bold text-green-800">Listen to Visionary</span>
-                      <span className="text-xs text-green-600">Buy (₹{amount || 0})</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Appeal Box - Below Consult Section */}
-            {awaitingDecision && isRejected && (
-              <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="space-y-3">
-                  <div className="bg-red-50 border-2 border-red-400 rounded-lg p-4">
-                    <h4 className="font-bold text-red-800 mb-2 flex items-center gap-2">
-                      <XCircle className="w-5 h-5" />
-                      Purchase Rejected - Submit Appeal
-                    </h4>
-                    <p className="text-sm text-red-700 mb-3">
-                      The Council has blocked this purchase. Provide justification to reconsider:
-                    </p>
-                    <textarea
-                      value={appealText}
-                      onChange={(e) => setAppealText(e.target.value)}
-                      placeholder="e.g., 'I cancelled my Netflix subscription to afford this'"
-                      className="w-full px-4 py-3 bg-white border border-red-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-red-500 min-h-[80px] resize-none"
-                      disabled={isLoading}
-                    />
-                    <div className="flex gap-2 mt-3">
-                      <button
-                        onClick={() => {
-                          setAwaitingDecision(false);
-                          setIsRejected(false);
-                          setQuery('');
-                          setAmount('');
-                          setAppealText('');
-                          setAppealRound(1);
-                        }}
-                        className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-medium"
-                      >
-                        Accept Rejection
-                      </button>
-                      <button
-                        onClick={handleAppealSubmit}
-                        disabled={isLoading || !appealText.trim()}
-                        className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 disabled:opacity-50"
-                      >
-                        {isLoading ? 'Submitting...' : `Submit Appeal #${appealRound}`}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Approved Decision Box - Below Consult Section */}
-            {awaitingDecision && !isRejected && (
-              <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <p className="text-center text-black font-medium mb-4">
-                  The Council has approved. What is your decision?
-                </p>
-                <div className="grid grid-cols-2 gap-4">
-                  <button
-                    onClick={() => handleDecision('save')}
-                    disabled={isProcessingDecision}
-                    className="p-4 bg-red-100 border-2 border-red-500 rounded-xl hover:bg-red-200 transition-all flex flex-col items-center group disabled:opacity-50"
-                  >
-                    <XCircle className="w-8 h-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
-                    <span className="font-bold text-red-800">Listen to Miser</span>
-                    <span className="text-xs text-red-600">Don't Buy</span>
-                  </button>
-                  <button
-                    onClick={() => handleDecision('buy')}
-                    disabled={isProcessingDecision}
-                    className="p-4 bg-green-100 border-2 border-green-500 rounded-xl hover:bg-green-200 transition-all flex flex-col items-center group disabled:opacity-50"
-                  >
-                    <CheckCircle className="w-8 h-8 text-green-600 mb-2 group-hover:scale-110 transition-transform" />
-                    <span className="font-bold text-green-800">Listen to Visionary</span>
-                    <span className="text-xs text-green-600">Buy (₹{amount || 0})</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Right Column - Council Transcript */}
-          <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 flex flex-col h-[700px]">
-            <h3 className="text-lg font-semibold text-black mb-4">Council Transcript</h3>
-            <div className="flex-1 overflow-y-auto pr-2 space-y-4">
-              {messages.length === 0 && !isLoading && (
-                <div className="text-center py-12 text-gray-500">
-                  Ask the council a financial question to begin...
-                </div>
-              )}
-              {messages.map((msg, idx) => (
-                <div
-                  key={idx}
-                  className={`p-4 rounded-lg border-l-4 ${msg.agent === 'miser'
-                    ? 'bg-red-50 border-red-500'
-                    : msg.agent === 'visionary'
-                      ? 'bg-green-50 border-green-500'
-                      : 'bg-amber-50 border-amber-500'
-                    }`}
-                >
-                  <p className="text-xs font-bold uppercase mb-1 text-gray-500">{msg.agent}</p>
-                  <p className="text-sm text-black">{msg.content}</p>
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
+      {/* Tab Navigation */}
+      <div className="max-w-7xl mx-auto px-4 pt-4">
+        <div className="border-b border-gray-300">
+          <div className="flex space-x-8">
+            <button
+              onClick={() => setActiveTab('council')}
+              className={`pb-3 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${activeTab === 'council'
+                ? 'border-black text-black'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              AI Council
+            </button>
+            <button
+              onClick={() => setActiveTab('expenses')}
+              className={`pb-3 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${activeTab === 'expenses'
+                ? 'border-black text-black'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+            >
+              <BarChart3 className="w-4 h-4" />
+              Expense Analysis
+            </button>
+            <button
+              onClick={() => setActiveTab('history')}
+              className={`pb-3 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${activeTab === 'history'
+                ? 'border-black text-black'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+            >
+              <Receipt className="w-4 h-4" />
+              Transaction History
+            </button>
           </div>
         </div>
       </div>
 
+      {/* Main Content */}
+      <div className="max-w-7xl mx-auto px-4 py-6">
+        {activeTab === 'council' && (
+          <>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+              <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-medium text-gray-600">Monthly Income</h3>
+                  <TrendingUp className="w-4 h-4 text-black" />
+                </div>
+                <p className="text-2xl font-bold text-black">₹{profile.monthly_income.toFixed(2)}</p>
+                <p className="text-xs text-gray-500 mt-1 capitalize">{profile.income_type} income</p>
+              </div>
+
+              <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-medium text-gray-600">Monthly Expenses</h3>
+                  <DollarSign className="w-4 h-4 text-black" />
+                </div>
+                <p className="text-2xl font-bold text-black">₹{profile.monthly_expenses.toFixed(2)}</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {profile.monthly_income > 0 ? ((profile.monthly_expenses / profile.monthly_income) * 100).toFixed(1) : 0}% of income
+                </p>
+              </div>
+
+              <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-medium text-gray-600">Financial Goal</h3>
+                  <Calendar className="w-4 h-4 text-black" />
+                </div>
+                <p className="text-lg font-semibold text-black truncate">{profile.financial_goal}</p>
+                <p className="text-xs text-gray-500 mt-1 capitalize">{profile.risk_tolerance} risk tolerance</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Left Column - Consult the Council + Appeal Box */}
+              <div className="space-y-4">
+                <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6">
+                  <h3 className="text-lg font-semibold text-black mb-4">Consult the Council</h3>
+
+                  {!awaitingDecision ? (
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleSubmit()}
+                        placeholder="Can I afford a ₹5000 purchase?"
+                        className="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
+                        disabled={isLoading}
+                      />
+                      <div className="flex gap-3">
+                        <input
+                          type="number"
+                          value={amount}
+                          onChange={(e) => setAmount(e.target.value)}
+                          placeholder="Amount (₹)"
+                          className="flex-1 px-4 py-3 bg-white border border-gray-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-black transition-all"
+                          disabled={isLoading}
+                        />
+                        <button
+                          onClick={handleSubmit}
+                          disabled={isLoading || !query.trim() || !amount}
+                          className="px-6 py-3 bg-black text-white rounded-lg font-semibold hover:bg-gray-900 transition-all flex items-center space-x-2 disabled:opacity-50"
+                        >
+                          <Send className="w-4 h-4" />
+                          <span>{isLoading ? 'Debating...' : 'Ask'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                      <p className="text-center text-black font-medium mb-4">The Council has spoken. What is your decision?</p>
+                      <div className="grid grid-cols-2 gap-4">
+                        <button
+                          onClick={() => handleDecision('save')}
+                          disabled={isProcessingDecision}
+                          className="p-4 bg-red-100 border-2 border-red-500 rounded-xl hover:bg-red-200 transition-all flex flex-col items-center group disabled:opacity-50"
+                        >
+                          <XCircle className="w-8 h-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
+                          <span className="font-bold text-red-800">Listen to Miser</span>
+                          <span className="text-xs text-red-600">Don't Buy</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleDecision('buy')}
+                          disabled={isProcessingDecision}
+                          className="p-4 bg-green-100 border-2 border-green-500 rounded-xl hover:bg-green-200 transition-all flex flex-col items-center group disabled:opacity-50"
+                        >
+                          <CheckCircle className="w-8 h-8 text-green-600 mb-2 group-hover:scale-110 transition-transform" />
+                          <span className="font-bold text-green-800">Listen to Visionary</span>
+                          <span className="text-xs text-green-600">Buy (₹{amount || 0})</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Appeal Box - Below Consult Section */}
+                {awaitingDecision && isRejected && (
+                  <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    <div className="space-y-3">
+                      <div className="bg-red-50 border-2 border-red-400 rounded-lg p-4">
+                        <h4 className="font-bold text-red-800 mb-2 flex items-center gap-2">
+                          <XCircle className="w-5 h-5" />
+                          Purchase Rejected - Submit Appeal
+                        </h4>
+                        <p className="text-sm text-red-700 mb-3">
+                          The Council has blocked this purchase. Provide justification to reconsider:
+                        </p>
+                        <textarea
+                          value={appealText}
+                          onChange={(e) => setAppealText(e.target.value)}
+                          placeholder="e.g., 'I cancelled my Netflix subscription to afford this'"
+                          className="w-full px-4 py-3 bg-white border border-red-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-red-500 min-h-[80px] resize-none"
+                          disabled={isLoading}
+                        />
+                        <div className="flex gap-2 mt-3">
+                          <button
+                            onClick={() => {
+                              setAwaitingDecision(false);
+                              setIsRejected(false);
+                              setQuery('');
+                              setAmount('');
+                              setAppealText('');
+                              setAppealRound(1);
+                            }}
+                            className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-medium"
+                          >
+                            Accept Rejection
+                          </button>
+                          <button
+                            onClick={handleAppealSubmit}
+                            disabled={isLoading || !appealText.trim()}
+                            className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 disabled:opacity-50"
+                          >
+                            {isLoading ? 'Submitting...' : `Submit Appeal #${appealRound}`}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Approved Decision Box - Below Consult Section */}
+                {awaitingDecision && !isRejected && (
+                  <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    <p className="text-center text-black font-medium mb-4">
+                      The Council has approved. What is your decision?
+                    </p>
+                    <div className="grid grid-cols-2 gap-4">
+                      <button
+                        onClick={() => handleDecision('save')}
+                        disabled={isProcessingDecision}
+                        className="p-4 bg-red-100 border-2 border-red-500 rounded-xl hover:bg-red-200 transition-all flex flex-col items-center group disabled:opacity-50"
+                      >
+                        <XCircle className="w-8 h-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
+                        <span className="font-bold text-red-800">Listen to Miser</span>
+                        <span className="text-xs text-red-600">Don't Buy</span>
+                      </button>
+                      <button
+                        onClick={() => handleDecision('buy')}
+                        disabled={isProcessingDecision}
+                        className="p-4 bg-green-100 border-2 border-green-500 rounded-xl hover:bg-green-200 transition-all flex flex-col items-center group disabled:opacity-50"
+                      >
+                        <CheckCircle className="w-8 h-8 text-green-600 mb-2 group-hover:scale-110 transition-transform" />
+                        <span className="font-bold text-green-800">Listen to Visionary</span>
+                        <span className="text-xs text-green-600">Buy (₹{amount || 0})</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Right Column - Council Transcript */}
+              <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 flex flex-col h-[700px]">
+                <h3 className="text-lg font-semibold text-black mb-4">Council Transcript</h3>
+                <div className="flex-1 overflow-y-auto pr-2 space-y-4">
+                  {messages.length === 0 && !isLoading && (
+                    <div className="text-center py-12 text-gray-500">
+                      Ask the council a financial question to begin...
+                    </div>
+                  )}
+                  {messages.map((msg, idx) => (
+                    <div
+                      key={idx}
+                      className={`p-4 rounded-lg border-l-4 ${msg.agent === 'miser'
+                        ? 'bg-red-50 border-red-500'
+                        : msg.agent === 'visionary'
+                          ? 'bg-green-50 border-green-500'
+                          : 'bg-amber-50 border-amber-500'
+                        }`}
+                    >
+                      <p className="text-xs font-bold uppercase mb-1 text-gray-500">{msg.agent}</p>
+                      <p className="text-sm text-black">{msg.content}</p>
+                    </div>
+                  ))}
+                  <div ref={messagesEndRef} />
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+
+
+        {/* Expense Analysis Tab */}
+        {activeTab === 'expenses' && (
+          <ExpenseAnalysis profile={profile} />
+        )}
+
+        {/* Transaction History Tab */}
+        {activeTab === 'history' && (
+          <TransactionHistory profile={profile} />
+        )}
+      </div>
+
+      {/* Profile Modal */}
       {isProfileOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
@@ -663,6 +742,6 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
           </div>
         </div>
       )}
-    </div>
+    </div >
   );
 }
