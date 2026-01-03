@@ -484,23 +484,36 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                   )}
                 </div>
 
-                {/* Appeal Box - Below Consult Section */}
-                {awaitingDecision && isRejected && (
+                {/* Negotiation/Appeal Box - For both APPROVED and REJECTED */}
+                {awaitingDecision && (
                   <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                     <div className="space-y-3">
-                      <div className="bg-red-50 border-2 border-red-400 rounded-lg p-4">
-                        <h4 className="font-bold text-red-800 mb-2 flex items-center gap-2">
-                          <XCircle className="w-5 h-5" />
-                          Purchase Rejected - Submit Appeal
+                      <div className={`border-2 rounded-lg p-4 ${isRejected ? 'bg-red-50 border-red-400' : 'bg-blue-50 border-blue-400'}`}>
+                        <h4 className={`font-bold mb-2 flex items-center gap-2 ${isRejected ? 'text-red-800' : 'text-blue-800'}`}>
+                          {isRejected ? (
+                            <>
+                              <XCircle className="w-5 h-5" />
+                              Purchase Rejected - Submit Appeal
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle className="w-5 h-5" />
+                              Want to Negotiate?
+                            </>
+                          )}
                         </h4>
-                        <p className="text-sm text-red-700 mb-3">
-                          The Council has blocked this purchase. Provide justification to reconsider:
+                        <p className={`text-sm mb-3 ${isRejected ? 'text-red-700' : 'text-blue-700'}`}>
+                          {isRejected
+                            ? "The Council has blocked this purchase. Provide justification to reconsider:"
+                            : "Council approved, but you can still negotiate for better terms or ask questions:"}
                         </p>
                         <textarea
                           value={appealText}
                           onChange={(e) => setAppealText(e.target.value)}
-                          placeholder="e.g., 'I cancelled my Netflix subscription to afford this'"
-                          className="w-full px-4 py-3 bg-white border border-red-300 rounded-lg text-black placeholder-gray-500 outline-none focus:border-red-500 min-h-[80px] resize-none"
+                          placeholder={isRejected
+                            ? "e.g., 'I won ₹100,000 in a hackathon'"
+                            : "e.g., 'Can I get a lower EMI by paying 50% upfront?'"}
+                          className={`w-full px-4 py-3 bg-white border rounded-lg text-black placeholder-gray-500 outline-none min-h-[80px] resize-none ${isRejected ? 'border-red-300 focus:border-red-500' : 'border-blue-300 focus:border-blue-500'}`}
                           disabled={isLoading}
                         />
                         <div className="flex gap-2 mt-3">
@@ -515,46 +528,17 @@ export default function Dashboard({ profile, onLogout, onProfileUpdate }: Dashbo
                             }}
                             className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-medium"
                           >
-                            Accept Rejection
+                            {isRejected ? 'Accept Rejection' : 'Skip Negotiation'}
                           </button>
                           <button
                             onClick={handleAppealSubmit}
                             disabled={isLoading || !appealText.trim()}
-                            className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 disabled:opacity-50"
+                            className={`flex-1 px-4 py-2 text-white rounded-lg font-semibold hover:opacity-90 disabled:opacity-50 ${isRejected ? 'bg-red-600' : 'bg-blue-600'}`}
                           >
-                            {isLoading ? 'Submitting...' : `Submit Appeal #${appealRound}`}
+                            {isLoading ? 'Submitting...' : `Submit ${isRejected ? 'Appeal' : 'Negotiation'} #${appealRound}`}
                           </button>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Approved Decision Box - Below Consult Section */}
-                {awaitingDecision && !isRejected && (
-                  <div className="bg-gray-50 backdrop-blur-sm rounded-xl border border-gray-300 p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                    <p className="text-center text-black font-medium mb-4">
-                      The Council has approved. What is your decision?
-                    </p>
-                    <div className="grid grid-cols-2 gap-4">
-                      <button
-                        onClick={() => handleDecision('save')}
-                        disabled={isProcessingDecision}
-                        className="p-4 bg-red-100 border-2 border-red-500 rounded-xl hover:bg-red-200 transition-all flex flex-col items-center group disabled:opacity-50"
-                      >
-                        <XCircle className="w-8 h-8 text-red-600 mb-2 group-hover:scale-110 transition-transform" />
-                        <span className="font-bold text-red-800">Listen to Miser</span>
-                        <span className="text-xs text-red-600">Don't Buy</span>
-                      </button>
-                      <button
-                        onClick={() => handleDecision('buy')}
-                        disabled={isProcessingDecision}
-                        className="p-4 bg-green-100 border-2 border-green-500 rounded-xl hover:bg-green-200 transition-all flex flex-col items-center group disabled:opacity-50"
-                      >
-                        <CheckCircle className="w-8 h-8 text-green-600 mb-2 group-hover:scale-110 transition-transform" />
-                        <span className="font-bold text-green-800">Listen to Visionary</span>
-                        <span className="text-xs text-green-600">Buy (₹{amount || 0})</span>
-                      </button>
                     </div>
                   </div>
                 )}
