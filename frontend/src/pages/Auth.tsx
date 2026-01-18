@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Zap, Mail, Lock, ArrowRight } from 'lucide-react';
+import { Zap, Mail, Lock, ArrowRight, CheckCircle } from 'lucide-react';
 
 interface AuthProps {
   onAuth: () => void;
@@ -12,6 +12,7 @@ export default function Auth({ onAuth }: AuthProps) {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,7 +26,11 @@ export default function Auth({ onAuth }: AuthProps) {
           password,
         });
         if (signUpError) throw signUpError;
-        onAuth();
+        
+        // Show success modal instead of calling onAuth immediately
+        setShowSuccessModal(true);
+        setEmail('');
+        setPassword('');
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({
           email,
@@ -39,6 +44,11 @@ export default function Auth({ onAuth }: AuthProps) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleCloseModal = () => {
+    setShowSuccessModal(false);
+    setIsSignUp(false); // Switch to Sign In tab
   };
 
   return (
@@ -145,6 +155,31 @@ export default function Auth({ onAuth }: AuthProps) {
           </p>
         </div>
       </div>
+
+      {/* Success Modal */}
+      {showSuccessModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8 animate-slideUp">
+            <div className="text-center">
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-green-100 mb-4">
+                <CheckCircle className="w-8 h-8 text-green-600" />
+              </div>
+              <h2 className="text-2xl font-bold text-black mb-2">
+                Registration Successful!
+              </h2>
+              <p className="text-gray-600 mb-6">
+                Please check your email to confirm your account, then login to continue.
+              </p>
+              <button
+                onClick={handleCloseModal}
+                className="w-full px-6 py-3 bg-black text-white rounded-lg font-semibold hover:bg-gray-900 transition-all"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
